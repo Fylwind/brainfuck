@@ -89,9 +89,10 @@ while :; do
                         "["x)
                             n=`expr $n + 1 || :`;;
                         "]"x)
-                            n=`expr $n - 1 && :` || {
+                            n=`expr $n - 1 || :`
+                            if [ $n -eq 0 ]; then
                                 break
-                            };;
+                            fi;;
                     esac
                 done
             fi;;
@@ -109,9 +110,10 @@ while :; do
                         "]"x)
                             n=`expr $n + 1 || :`;;
                         "["x)
-                            n=`expr $n - 1 && :` || {
+                            n=`expr $n - 1 || :`
+                            if [ $n -eq 0 ]; then
                                 break
-                            };;
+                            fi;;
                     esac
                 done
             fi;;
