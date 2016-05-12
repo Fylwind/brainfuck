@@ -3,17 +3,20 @@ set -eu
 
 usage() {
     cat >&2 <<EOF
-usage: `basename "$0"` [-C|-i] [-M <mem>] <input> [--] [<args>...]
+usage: `basename "$0"` [-C|-i] [-M <mem>] [-n <name>] <input> [--] [<args>...]
 
 Compile Brainfuck code to C and then run the C compiler on the output.
 Unrecognized flags automatically passed to the C compiler.
 
-  <input>  Filename of the source code.
-  <args>   Additional arguments for the C compiler.
-  -M       Number of cells available for use by the Brainfuck code.
-           Default is 65535.
-  -C       Compile to C code only; don't bother running the C compiler.
-  -i       Run the executable after it has been compiled.
+  <input>    Filename of the source code.
+  <args>     Additional arguments for the C compiler.
+  -C         Compile to C code only; don't bother running the C compiler.
+  -i         Run the executable after it has been compiled.
+  -M         Number of cells available for use by the Brainfuck code.
+             Default is 65535.
+  -n <name>  The name of the function that the code compiles to.  If the name
+             is "main", then the function takes no arguments and returns
+             "int".  Otherwise, it returns "void".  Default is "main".
 
 EOF
     exit 1
@@ -67,13 +70,21 @@ static void reset_bf(struct bf *rt)
 }
 
 #define bf_test(rt) (!!*(rt)->ptr)
+
 EOF
 }
 
 compile() {
+    rettype=void
+    retstmt=
+    if [ x"$funcname" = xmain ]; then
+        rettype=int
+        retstmt='return 0;
+'
+    fi
     runtime
     cat <<EOF
-int main(void)
+$rettype $funcname(void)
 {
 struct bf rt;
 init_bf(&rt, $mem);
@@ -110,7 +121,7 @@ EOF
     fi
     cat <<EOF
 reset_bf(&rt);
-}
+$retstmt}
 EOF
 }
 
@@ -118,6 +129,7 @@ unset infile
 outfile=
 mode=binary
 mem=65535
+funcname=main
 
 n=$#
 i=0
@@ -129,6 +141,10 @@ while [ $i -lt $n ]; do
         -C)
             shift
             mode=c_only
+            ;;
+        -i)
+            shift
+            mode=run
             ;;
         -M)
             shift
@@ -146,10 +162,32 @@ EOF
             }
             mem=$1
             shift
+            i=`expr $i + 1`
             ;;
-        -i)
+        -n)
             shift
-            mode=run
+            if [ $# -le 0 ]; then
+                cat >&2 <<EOF
+`basename "$0"`: expected argument after -n
+EOF
+                exit 1
+            fi
+            case $1 in
+                *[!a-zA-Z0-9_]*)
+                    cat >&2 <<EOF
+`basename "$0"`: invalid value for -n: $1
+EOF
+                    exit;;
+                [a-zA-Z_]*) ;;
+                *)
+                    cat >&2 <<EOF
+`basename "$0"`: invalid value for -n: $1
+EOF
+                    exit 1;;
+            esac
+            funcname=$1
+            shift
+            i=`expr $i + 1`
             ;;
         -*)
             set -- "$@" "$1"
@@ -184,7 +222,7 @@ fi
 compile <"$infile_" >"$infile".c
 
 if [ "$mode" = c_only ]; then
-    return
+    exit
 fi
 
 if [ "$mode" = binary ]; then
