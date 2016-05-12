@@ -1,0 +1,120 @@
+#!/bin/sh
+set -eu
+
+usage() {
+    cat >&2 <<EOF
+usage: `basename "$0"` [<input>]
+
+Interpret Brainfuck code.
+
+  <input>  Filename of the source code.  Defaults to standard input.  (Note
+           that trying to read standard input while running code delivered via
+           standard input can lead to confusing results.)
+
+EOF
+    exit 1
+}
+
+geti() {
+    if [ $ip -ge $ipmax ]; then
+        i=`dd 2>/dev/null <&3 bs=1 count=1; echo x`
+        case $i in
+            x)             ;;
+            ">"x) im=$im">";;
+            "<"x) im=$im"<";;
+            "+"x) im=$im"+";;
+            "-"x) im=$im"-";;
+            "."x) im=$im".";;
+            ","x) im=$im",";;
+            "["x) im=$im"[";;
+            "]"x) im=$im"]";;
+            *)    im=$im" ";;           # in case we get NUL char
+        esac
+        ipmax=`expr $ipmax + 1`
+    else
+        i=`printf "%s" "$im" | dd 2>/dev/null bs=1 count=1 skip=$ip; echo x`
+    fi
+}
+
+if [ $# -gt 1 ]; then
+    usage
+fi
+case ${1-} in
+    -*) usage;;
+esac
+exec 3<"${1-/dev/stdin}"
+
+dp=0
+ip=0
+ipmax=0
+im=
+while :; do
+    geti
+    case $i in
+        x)
+            break;;
+        ">"x)
+            dp=`expr $dp + 1 || :`;;
+        "<"x)
+            if [ $dp -eq 0 ]; then
+                echo >&2 "instruction pointer cannot go below 0"
+                exit 1
+            fi
+            dp=`expr $dp - 1 || :`;;
+        "+"x)
+            eval 'd'$dp'=`expr "(" "${d'$dp'-0}" + 1 ")" "%" 256 || :`
+            { [ "$d'$dp'" -ne 0 ] || unset d'$dp'; }';;
+        "-"x)
+            eval 'd'$dp'=`expr "(" "${d'$dp'-0}" + 255 ")" "%" 256 || :`
+            { [ "$d'$dp'" -ne 0 ] || unset d'$dp'; }';;
+        "."x)
+            eval 'd=`printf "%03o" "${d'$dp'-0}"`'
+            printf "\\$d";;
+        ","x)
+            d=`dd 2>/dev/null bs=1 count=1; echo x`
+            if [ "$d" != x ]; then
+                LC_CTYPE=C eval 'd'$dp'=`printf "%i" "'\''$d"`'
+            fi;;
+        "["x)
+            eval 'd=${d'$dp'-0}'
+            if [ "$d" -eq 0 ]; then
+                n=1
+                while :; do
+                    ip=`expr $ip + 1 || :`
+                    geti
+                    case $i in
+                        x)
+                            echo >&2 "EOF reached while scanning for ]"
+                            exit 1;;
+                        "["x)
+                            n=`expr $n + 1 || :`;;
+                        "]"x)
+                            n=`expr $n - 1 && :` || {
+                                break
+                            };;
+                    esac
+                done
+            fi;;
+        "]"x)
+            eval 'd=${d'$dp'-0}'
+            if [ "$d" -ne 0 ]; then
+                n=1
+                while :; do
+                    ip=`expr $ip - 1 || :`
+                    geti
+                    case $i in
+                        x)
+                            echo >&2 "BOF reached while scanning for ["
+                            exit 1;;
+                        "]"x)
+                            n=`expr $n + 1 || :`;;
+                        "["x)
+                            n=`expr $n - 1 && :` || {
+                                break
+                            };;
+                    esac
+                done
+            fi;;
+    esac
+    ip=`expr $ip + 1 || :`
+done

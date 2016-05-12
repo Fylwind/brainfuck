@@ -1,0 +1,198 @@
+#!/bin/sh
+set -eu
+
+usage() {
+    cat >&2 <<EOF
+usage: `basename "$0"` [-C|-i] [-M <mem>] <input> [--] [<args>...]
+
+Compile Brainfuck code to C and then run the C compiler on the output.
+Unrecognized flags automatically passed to the C compiler.
+
+  <input>  Filename of the source code.
+  <args>   Additional arguments for the C compiler.
+  -M       Number of cells available for use by the Brainfuck code.
+           Default is 65535.
+  -C       Compile to C code only; don't bother running the C compiler.
+  -i       Run the executable after it has been compiled.
+
+EOF
+    exit 1
+}
+
+runtime() {
+    cat <<EOF
+#include <stdio.h>
+#include <stdlib.h>
+
+struct bf {
+    unsigned char *ptr;
+    void *mem;
+};
+
+static void init_bf(struct bf *rt, size_t count)
+{
+    rt->mem = calloc(count, 1);
+    if (!rt->mem) {
+        fprintf(stderr, "bf: oom\n");
+        fflush(stderr);
+        abort();
+    }
+    rt->ptr = (unsigned char *)rt->mem;
+}
+
+static void reset_bf(struct bf *rt)
+{
+    free(rt->mem);
+    rt->mem = NULL;
+    rt->ptr = NULL;
+}
+
+#define bf_incp(rt) (++(rt)->ptr)
+
+#define bf_decp(rt) (--(rt)->ptr)
+
+#define bf_incb(rt) (*(rt)->ptr = (unsigned char)((*(rt)->ptr + 1) % 256))
+
+#define bf_decb(rt) (*(rt)->ptr = (unsigned char)((*(rt)->ptr + 255) % 256))
+
+#define bf_putc(rt) (putchar(*(const char *)(rt)->ptr))
+
+#define bf_getc(rt) \
+{ \
+    const int i = getchar(); \
+    if (i != EOF) { \
+        const char c = (char)i; \
+        *(rt)->ptr = *(unsigned char *)&c % 256; \
+    } \
+}
+
+#define bf_test(rt) (!!*(rt)->ptr)
+EOF
+}
+
+compile() {
+    runtime
+    cat <<EOF
+int main(void)
+{
+struct bf rt;
+init_bf(&rt, $mem);
+EOF
+    depth=0
+    while :; do
+        c=`dd 2>/dev/null bs=1 count=1; echo x`
+        case $c in
+            ">"x) echo "bf_incp(&rt);";;
+            "<"x) echo "bf_decp(&rt);";;
+            "+"x) echo "bf_incb(&rt);";;
+            "-"x) echo "bf_decb(&rt);";;
+            "."x) echo "bf_putc(&rt);";;
+            ","x) echo "bf_getc(&rt);";;
+            "["x) echo "while (bf_test(&rt)) {";
+                  depth=`expr $depth + 1`;;
+            "]"x) if [ "$depth" -le 0 ]; then
+                      cat >&2 <<EOF
+`basename "$0"`: error: unmatched ']'
+EOF
+                      return 1
+                  else
+                      echo "}"
+                      depth=`expr $depth - 1 || :`
+                  fi;;
+            x)    break;;
+        esac
+    done
+    if [ "$depth" -gt 0 ]; then
+        cat >&2 <<EOF
+`basename "$0"`: error: unmatched '['
+EOF
+        return 1
+    fi
+    cat <<EOF
+reset_bf(&rt);
+}
+EOF
+}
+
+unset infile
+outfile=
+mode=binary
+mem=65535
+
+n=$#
+i=0
+while [ $i -lt $n ]; do
+    case $1 in
+        --)
+            shift
+            break;;
+        -C)
+            shift
+            mode=c_only
+            ;;
+        -M)
+            shift
+            if [ $# -le 0 ]; then
+                cat >&2 <<EOF
+`basename "$0"`: expected argument after -M
+EOF
+                exit 1
+            fi
+            [ "$1" -ge 0 ] 2>/dev/null || {
+                cat >&2 <<EOF
+`basename "$0"`: invalid value for -M: $1
+EOF
+                exit 1
+            }
+            mem=$1
+            shift
+            ;;
+        -i)
+            shift
+            mode=run
+            ;;
+        -*)
+            set -- "$@" "$1"
+            shift
+            ;;
+        *)
+            if [ x"${infile+x}" = x ]; then
+                infile=$1
+            else
+                cat >&2 <<EOF
+`basename "$0"`: only one input file allowed
+EOF
+                exit 1
+            fi
+            set -- "$@" "$1".c
+            shift
+            ;;
+    esac
+    i=`expr $i + 1`
+done
+
+if [ x"${infile+x}" = x ]; then
+    usage
+fi
+
+if [ x"$infile" = x- ]; then
+    infile_=/dev/stdin
+else
+    infile_=$infile
+fi
+
+compile <"$infile_" >"$infile".c
+
+if [ "$mode" = c_only ]; then
+    return
+fi
+
+if [ "$mode" = binary ]; then
+    exec "${CC-cc}" "$@"
+fi
+
+"${CC-cc}" "$@" -o "$infile".exe
+case $infile in
+    */*) exec "$infile".exe;;
+    *)   exec ./"$infile".exe;;
+esac
